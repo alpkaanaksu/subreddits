@@ -9,6 +9,7 @@ import numpy as np
 
 from openai import OpenAI
 
+client = OpenAI()
 
 subreddit = ''
 start = 0
@@ -53,8 +54,71 @@ def analyze_id(id):
 
     return (types[parts[0]], parts[1])
 
+def get_embedding(text, model="text-embedding-3-small"):
+    response = client.embeddings.create(model=model, input=text)
+    return response.data[0].embedding
 
-def analyze_subreddit(subreddit):
+def get_author_embedding(author, comments, n=10):
+    author_comments = comments.filter(pl.col("author") == author)
+
+    # cast created_utc to i64
+    author_comments = author_comments.with_columns(pl.col("created_utc").cast(pl.Int64))
+
+    # merge posts and comments in new data frame
+    author_content = author_comments.select(['body', 'created_utc'])
+
+    # sort by date and get the first n rows
+    author_content = author_content.sort("created_utc", descending=True).head(n)
+
+    author_text = " ".join(author_content["body"].to_list())
+
+    return get_embedding(author_text)
+
+def embedding_weight_correlation(G, comments):
+    log(f'Calculating embedding-weight correlationf for {len(G.nodes())} authors...')
+    interactions = []
+    authors_list = []
+    
+    for edge in G.edges(data=True):
+        interactions.append({
+            "from_author": edge[0],
+            "to_author": edge[1],
+            "weight": edge[2]["weight"]
+        })    
+        
+        authors_list.append(edge[0])
+        authors_list.append(edge[1])
+
+    authors_list = list(set(authors_list))
+    
+    n = 0
+    
+    author_embeddings = {}
+    
+    for author in authors_list:
+        log(f'Getting embedding for author {author} ({n}/{len(authors_list)})')
+        author_embeddings[author] = get_author_embedding(author, comments=comments)
+        n += 1
+    
+    similarity_of_authors = {
+        (author1, author2): np.dot(author_embeddings[author1], author_embeddings[author2])
+        for author1 in authors_list
+        for author2 in authors_list
+    }
+    
+    d = interactions
+
+    for i in range(len(d)):
+        d[i]["similarity"] = similarity_of_authors[(d[i]["from_author"], d[i]["to_author"])]
+        
+    # correlation between weight and similarity
+
+    weights = map(lambda x: x["weight"], d)
+    similarities = map(lambda x: x["similarity"], d)
+
+    return np.corrcoef(list(weights), list(similarities))[0][1]
+
+def analyze_subreddit(subreddit, analyze_posts = True):
     global start
     start = time.time()
 
@@ -71,27 +135,41 @@ def analyze_subreddit(subreddit):
 
     log('', section='Loading Data')
 
-    log('Reading submissions...')
-    submissions_pre = pl.read_ndjson(f'./data/{subreddit}/{subreddit}_submissions.ndjson')
-    log('Reading submissions... Done!')
+    submissions_pre = pl.DataFrame({})
+    
+    if analyze_posts:
+        log('Reading submissions...')
+        submissions_pre = pl.read_ndjson(f'./data/{subreddit}/{subreddit}_submissions.ndjson')
+        log('Reading submissions... Done!')
+    else:
+        log('Skipping submissions...')
 
     log('Reading comments...')
     comments_pre = pl.read_ndjson(f'./data/{subreddit}/{subreddit}_comments.ndjson')
     log('Reading comments... Done!')
 
-    log('', section='Data Preprocessing')
-
-    posts = submissions_pre.select(
-        ["id", "author", "title", "created_utc", "selftext"]
-    )
+    log('', section='Data Preprocessing')    
+    
+    
+    posts = pl.DataFrame({})
+    
+    if analyze_posts:
+        submissions_pre.select(
+            ["id", "author", "title", "created_utc", "selftext"]
+        )
     
     comments = comments_pre.select(
         ["id", "link_id", "parent_id", "author", "created_utc", "body"]
     )
     
+    n_pre_deletion = len(posts) + len(comments)
+    
     # remove [deleted] authors
-    posts = posts.filter(pl.col("author") != "[deleted]")
+    if analyze_posts:
+        posts = posts.filter(pl.col("author") != "[deleted]")
     comments = comments.filter(pl.col("author") != "[deleted]")
+    
+    n_post_deletion = len(posts) + len(comments)
     
     log('Data Preprocessing... Done!')
     
@@ -100,8 +178,9 @@ def analyze_subreddit(subreddit):
     post_to_author = {}
     comment_to_author = {}
 
-    for post in posts.iter_rows(named=True):
-        post_to_author[post["id"]] = post["author"]
+    if analyze_posts:
+        for post in posts.iter_rows(named=True):
+            post_to_author[post["id"]] = post["author"]
 
     for comment in comments.iter_rows(named=True):
         comment_to_author[comment["id"]] = comment["author"]
@@ -109,7 +188,7 @@ def analyze_subreddit(subreddit):
     def get_author(type, id):
         if type == 'comment':
             return comment_to_author[id] if id in comment_to_author else None
-        elif type == 'link':
+        elif type == 'link' and analyze_posts:
             return post_to_author[id] if id in post_to_author else None
         else:
             return None
@@ -126,6 +205,7 @@ def analyze_subreddit(subreddit):
     
     weighted_edges = (
         edges
+        .rename({"from_author": "to_author", "to_author": "from_author"})
         .group_by(["from_author", "to_author"]).len().rename({"len": "weight"})
         .filter(pl.col("from_author").is_not_null() & pl.col("to_author").is_not_null())
     )
@@ -146,23 +226,23 @@ def analyze_subreddit(subreddit):
     # nx.write_gexf(G, f"./results/{subreddit}/fullgraph.gexf")
     # log(f'Exported Graph to GEXF at \'./results/{subreddit}/fullgraph.gexf\'')
     
-    # log('', section='Top authors')
+    log('', section='Top authors')
     
-    # n = 1000
+    n = 100
         
-    # log(f'Selecting top authors (n = {n})...')
+    log(f'Selecting top authors (n = {n})...')
     
-    # top_authors = nx.voterank(G, n)
+    top_authors = nx.voterank(G, n)
     
-    # subgraph = G.subgraph(top_authors)
+    subgraph = G.subgraph(top_authors)
     
-    # log(f'Selected top authors (n = {n})... Done!')
+    log(f'Selected top authors (n = {n})... Done!')
     
-    # log(f'Exporting Subgraph to GEXF...')
+    log(f'Exporting Subgraph to GEXF...')
     
-    # nx.write_gexf(subgraph, f"./results/{subreddit}/subgraph.gexf")
+    nx.write_gexf(subgraph, f"./results/{subreddit}/subgraph.gexf")
     
-    # log(f'Exported Subgraph to GEXF at \'./results/{subreddit}/subgraph.gexf\'')
+    log(f'Exported Subgraph to GEXF at \'./results/{subreddit}/subgraph.gexf\'')
     
     log('', section='Calculating Metrics')
     
@@ -171,17 +251,10 @@ def analyze_subreddit(subreddit):
     log(f'Number of redditors: {G.number_of_nodes()}', type='result')
     log(f'Number of relationships: {G.number_of_edges()}', type='result')
     
-    # log('Calculating degree centrality...')
-    # degree_centrality = nx.group_degree_centrality(G)
-    # log(f'Degree centrality: {degree_centrality}')
     
     log('Calculating density...')
     density = nx.density(G)
     log(f'Density: {density}', type='result')
-    
-    # log('Calculating average clustering...')
-    # avg_clustering = nx.average_clustering(G)
-    # log(f'Average clustering: {avg_clustering}')
     
     log('Calculating average reciprocity...')
     avg_reciprocity = nx.overall_reciprocity(G)
@@ -259,6 +332,10 @@ def analyze_subreddit(subreddit):
     sd_degree_centrality = np.std(list(degree_centrality.values()))
     sd_eigenvector_centrality = np.std(list(eigenvector_centrality.values()))
     
+    cv_pagerank = sd_pagerank / np.mean(list(pagerank.values()))
+    cv_degree_centrality = sd_degree_centrality / np.mean(list(degree_centrality.values()))
+    cv_eigenvector_centrality = sd_eigenvector_centrality / np.mean(list(eigenvector_centrality.values()))
+    
     log(f'Pagerank variance: {var_pagerank}', type='result')
     log(f'Degree centrality variance: {var_degree_centrality}', type='result')
     log(f'Eigenvector centrality variance: {var_eigenvector_centrality}', type='result')
@@ -266,6 +343,20 @@ def analyze_subreddit(subreddit):
     log(f'Pagerank standard deviation: {sd_pagerank}', type='result')
     log(f'Degree centrality standard deviation: {sd_degree_centrality}', type='result')
     log(f'Eigenvector centrality standard deviation: {sd_eigenvector_centrality}', type='result')
+    
+    log(f'Pagerank coefficient of variation: {cv_pagerank}', type='result')
+    log(f'Degree centrality coefficient of variation: {cv_degree_centrality}', type='result')
+    log(f'Eigenvector centrality coefficient of variation: {cv_eigenvector_centrality}', type='result')
+    
+    n_deleted = n_pre_deletion - n_post_deletion
+    deleted_ratio = n_deleted / n_pre_deletion
+    
+    log(f'Number of deleted authors: {n_deleted}', type='result')
+    log(f'Percentage of deleted authors: {deleted_ratio * 100:.2f}%', type='result')
+    
+    log('Calculating embedding-weight correlation...')
+    ew_cor = embedding_weight_correlation(subgraph, comments)
+    log(f'Embedding-weight correlation: {ew_cor}', type='result')
     
     log('Exporting metrics to CSV...')
     
@@ -280,7 +371,13 @@ def analyze_subreddit(subreddit):
         'var_eigenvector_centrality': var_eigenvector_centrality,
         'sd_pagerank': sd_pagerank,
         'sd_degree_centrality': sd_degree_centrality,
-        'sd_eigenvector_centrality': sd_eigenvector_centrality    
+        'sd_eigenvector_centrality': sd_eigenvector_centrality,
+        'cv_pagerank': cv_pagerank,
+        'cv_degree_centrality': cv_degree_centrality,
+        'cv_eigenvector_centrality': cv_eigenvector_centrality,
+        'n_deleted': n_deleted,
+        'deleted_ratio': deleted_ratio,
+        'embedding_weight_correlation': ew_cor
     }
     
     with open(f'./results/{subreddit}/metrics.csv', 'w') as f:
@@ -290,6 +387,11 @@ def analyze_subreddit(subreddit):
     
     log(f'Exported metrics to CSV at \'./results/{subreddit}/metrics.csv\'')
     
+    log('', section='Done!')
+    
+    log(f'Finished at {time.ctime()}, the analysis took {time.time() - start:.2f}s')
+    
+    log(f'You can find the results at \'./results/{subreddit}/\'')
     
 
 if __name__ == '__main__':
@@ -300,4 +402,9 @@ if __name__ == '__main__':
     
     subreddit = sys.argv[1]
     
-    analyze_subreddit(subreddit)
+    analyze_posts = True
+    
+    if len(sys.argv) == 3 and sys.argv[2] == '--no-posts':
+        analyze_posts = False
+        
+    analyze_subreddit(subreddit, analyze_posts = analyze_posts)
