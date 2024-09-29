@@ -4,6 +4,8 @@ import time
 
 import polars as pl
 import networkx as nx
+import matplotlib.pyplot as plt
+import numpy as np
 
 from openai import OpenAI
 
@@ -139,10 +141,10 @@ def analyze_subreddit(subreddit):
         
     log('Building Graph... Done!')
     
-    log('', section='Exporting Graph')
+    # log('', section='Exporting Graph')
     
-    nx.write_gexf(G, f"./results/{subreddit}/fullgraph.gexf")
-    log(f'Exported Graph to GEXF at \'./results/{subreddit}/fullgraph.gexf\'')
+    # nx.write_gexf(G, f"./results/{subreddit}/fullgraph.gexf")
+    # log(f'Exported Graph to GEXF at \'./results/{subreddit}/fullgraph.gexf\'')
     
     # log('', section='Top authors')
     
@@ -164,6 +166,11 @@ def analyze_subreddit(subreddit):
     
     log('', section='Calculating Metrics')
     
+    log(f'Number of interactions: {len(edges)}', type='result')
+    
+    log(f'Number of redditors: {G.number_of_nodes()}', type='result')
+    log(f'Number of relationships: {G.number_of_edges()}', type='result')
+    
     # log('Calculating degree centrality...')
     # degree_centrality = nx.group_degree_centrality(G)
     # log(f'Degree centrality: {degree_centrality}')
@@ -180,9 +187,108 @@ def analyze_subreddit(subreddit):
     avg_reciprocity = nx.overall_reciprocity(G)
     log(f'Average reciprocity: {avg_reciprocity}', type='result')
     
+    log('Creating degree distribution histogram...')
+    degree_distribution = nx.degree_histogram(G)
     
+    # Creating plot
+    plt.plot(degree_distribution)
+    plt.xlabel('Degree')
+    plt.ylabel('Frequency')
+    plt.title('Degree Distribution')
+    plt.savefig(f'./results/{subreddit}/degree_distribution.png')
     
+    plt.clf()
     
+    log(f'Created degree distribution histogram at \'./results/{subreddit}/degree_distribution.png\'')
+    
+    log('Calculating pagerank...')
+    pagerank = nx.pagerank(G)
+    log(f'Pagerank. Done!', type='result')
+    log('Creating pagerank histogram...')
+    
+    # Creating plot
+    plt.hist(pagerank.values())
+    plt.xlabel('Pagerank')
+    plt.ylabel('Frequency')
+    plt.title('Pagerank Distribution')
+    plt.savefig(f'./results/{subreddit}/pagerank_distribution.png')
+    
+    plt.clf()
+    
+    log(f'Created pagerank histogram at \'./results/{subreddit}/pagerank_distribution.png\'')
+    
+    log('Calculating degree centrality...')
+    degree_centrality = nx.degree_centrality(G)
+    log(f'Degree centrality. Done!', type='result')
+    log('Creating degree centrality histogram...')
+    
+    # Creating plot
+    plt.hist(degree_centrality.values())
+    plt.xlabel('Degree Centrality')
+    plt.ylabel('Frequency')
+    plt.title('Degree Centrality Distribution')
+    plt.savefig(f'./results/{subreddit}/degree_centrality_distribution.png')
+    
+    plt.clf()
+    
+    log(f'Created degree centrality histogram at \'./results/{subreddit}/degree_centrality_distribution.png\'')
+    
+    log('Calculating eigenvector centrality...')
+    eigenvector_centrality = nx.eigenvector_centrality(G)
+    log(f'Eigenvector centrality. Done!', type='result')
+    log('Creating eigenvector centrality histogram...')
+    
+    # Creating plot
+    plt.hist(eigenvector_centrality.values())
+    plt.xlabel('Eigenvector Centrality')
+    plt.ylabel('Frequency')
+    plt.title('Eigenvector Centrality Distribution')
+    plt.savefig(f'./results/{subreddit}/eigenvector_centrality_distribution.png')
+    
+    plt.clf()
+    
+    log(f'Created eigenvector centrality histogram at \'./results/{subreddit}/eigenvector_centrality_distribution.png\'')
+    
+    log('Calculating variance and standard deviation of centralities...')
+    
+    var_pagerank = np.var(list(pagerank.values()))
+    var_degree_centrality = np.var(list(degree_centrality.values()))
+    var_eigenvector_centrality = np.var(list(eigenvector_centrality.values()))
+    
+    sd_pagerank = np.std(list(pagerank.values()))
+    sd_degree_centrality = np.std(list(degree_centrality.values()))
+    sd_eigenvector_centrality = np.std(list(eigenvector_centrality.values()))
+    
+    log(f'Pagerank variance: {var_pagerank}', type='result')
+    log(f'Degree centrality variance: {var_degree_centrality}', type='result')
+    log(f'Eigenvector centrality variance: {var_eigenvector_centrality}', type='result')
+    
+    log(f'Pagerank standard deviation: {sd_pagerank}', type='result')
+    log(f'Degree centrality standard deviation: {sd_degree_centrality}', type='result')
+    log(f'Eigenvector centrality standard deviation: {sd_eigenvector_centrality}', type='result')
+    
+    log('Exporting metrics to CSV...')
+    
+    metrics = {
+        'interactions': len(edges),
+        'redditors': G.number_of_nodes(),
+        'relationships': G.number_of_edges(),
+        'density': density,
+        'avg_reciprocity': avg_reciprocity,
+        'var_pagerank': var_pagerank,
+        'var_degree_centrality': var_degree_centrality,
+        'var_eigenvector_centrality': var_eigenvector_centrality,
+        'sd_pagerank': sd_pagerank,
+        'sd_degree_centrality': sd_degree_centrality,
+        'sd_eigenvector_centrality': sd_eigenvector_centrality    
+    }
+    
+    with open(f'./results/{subreddit}/metrics.csv', 'w') as f:
+        f.write(','.join(metrics.keys()))
+        f.write('\n')
+        f.write(','.join(map(str, metrics.values())))
+    
+    log(f'Exported metrics to CSV at \'./results/{subreddit}/metrics.csv\'')
     
     
 
